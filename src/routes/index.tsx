@@ -69,12 +69,8 @@ function LoginPage() {
     <main className="flex min-h-screen items-center justify-center bg-muted/40 px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
-          <h1 className="text-xl font-semibold tracking-tight text-foreground">
-            Factory Console
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Sign in to your workspace
-          </p>
+          <h1 className="text-xl font-semibold tracking-tight text-foreground">Factory Console</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Sign in to your workspace</p>
         </div>
         <form
           onSubmit={handleSubmit}
@@ -103,9 +99,7 @@ function LoginPage() {
               disabled={loading}
             />
           </div>
-          {error ? (
-            <p className="text-sm text-destructive">{error}</p>
-          ) : null}
+          {error ? <p className="text-sm text-destructive">{error}</p> : null}
           <Button type="submit" className="w-full" disabled={loading}>
             {loading ? "Signing in…" : "Sign In"}
           </Button>

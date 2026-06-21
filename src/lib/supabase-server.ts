@@ -20,33 +20,27 @@ export type SupabaseServerClient = {
   applyCookies: (response: Response) => Response;
 };
 
-export function createSupabaseServerClient(
-  request: Request,
-): SupabaseServerClient {
+export function createSupabaseServerClient(request: Request): SupabaseServerClient {
   if (!isSupabaseConfigured()) {
     throw new Error("Supabase is not configured.");
   }
 
   const cookiesToSet: CookieToSet[] = [];
 
-  const supabase = createServerClient<Database>(
-    getSupabaseUrl(),
-    getSupabaseAnonKey(),
-    {
-      cookies: {
-        getAll() {
-          const header = request.headers.get("Cookie") ?? "";
-          return parseCookieHeader(header).map(({ name, value }) => ({
-            name,
-            value: value ?? "",
-          }));
-        },
-        setAll(cookies) {
-          cookiesToSet.push(...cookies);
-        },
+  const supabase = createServerClient<Database>(getSupabaseUrl(), getSupabaseAnonKey(), {
+    cookies: {
+      getAll() {
+        const header = request.headers.get("Cookie") ?? "";
+        return parseCookieHeader(header).map(({ name, value }) => ({
+          name,
+          value: value ?? "",
+        }));
+      },
+      setAll(cookies) {
+        cookiesToSet.push(...cookies);
       },
     },
-  );
+  });
 
   return {
     supabase,

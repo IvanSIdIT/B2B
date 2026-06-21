@@ -19,10 +19,7 @@ export const Route = createFileRoute("/api/auth/logout")({
           return applyCookies(response);
         } catch (error) {
           console.error("[auth/logout]", error);
-          return Response.json(
-            { error: "Внутренняя ошибка сервера" },
-            { status: 500 },
-          );
+          return Response.json({ error: "Внутренняя ошибка сервера" }, { status: 500 });
         }
       },
     },

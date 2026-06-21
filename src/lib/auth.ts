@@ -4,11 +4,7 @@ import { z } from "zod";
 export type UserRole = "worker" | "manager";
 
 export const loginSchema = z.object({
-  email: z
-    .string()
-    .trim()
-    .min(1, "Email обязателен")
-    .email("Некорректный email"),
+  email: z.string().trim().min(1, "Email обязателен").email("Некорректный email"),
   password: z.string().min(1, "Пароль не может быть пустым"),
 });
 

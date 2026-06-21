@@ -9,11 +9,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  formatErrorId,
-  severityLabels,
-  useErrorLogs,
-} from "@/hooks/use-error-logs";
+import { formatErrorId, severityLabels, useErrorLogs } from "@/hooks/use-error-logs";
 
 export const Route = createFileRoute("/manager")({
   head: () => ({
@@ -45,8 +41,8 @@ function ManagerPage() {
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6">
         {!configured ? (
           <p className="mb-4 text-sm text-muted-foreground">
-            Supabase не настроен. Добавьте VITE_SUPABASE_URL и VITE_SUPABASE_ANON_KEY в
-            файл .env и выполните SQL из supabase/schema.sql.
+            Supabase не настроен. Добавьте VITE_SUPABASE_URL и VITE_SUPABASE_ANON_KEY в файл .env и
+            выполните SQL из supabase/schema.sql.
           </p>
         ) : null}
 
@@ -83,13 +79,9 @@ function ManagerPage() {
               ) : (
                 logs.map((log) => (
                   <TableRow key={log.id}>
-                    <TableCell className="font-mono text-xs">
-                      {formatErrorId(log.id)}
-                    </TableCell>
+                    <TableCell className="font-mono text-xs">{formatErrorId(log.id)}</TableCell>
                     <TableCell>{log.broken_part ?? "—"}</TableCell>
-                    <TableCell>
-                      {log.severity ? severityLabels[log.severity] : "—"}
-                    </TableCell>
+                    <TableCell>{log.severity ? severityLabels[log.severity] : "—"}</TableCell>
                     <TableCell className="max-w-xs whitespace-normal">
                       {log.worker_message}
                     </TableCell>

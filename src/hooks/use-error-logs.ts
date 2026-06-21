@@ -30,13 +30,9 @@ export function useErrorLogs() {
     const supabase = getSupabase();
     const channel = supabase
       .channel("error_logs_changes")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "error_logs" },
-        () => {
-          queryClient.invalidateQueries({ queryKey: ["error_logs"] });
-        },
-      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "error_logs" }, () => {
+        queryClient.invalidateQueries({ queryKey: ["error_logs"] });
+      })
       .subscribe();
 
     return () => {
@@ -47,10 +43,7 @@ export function useErrorLogs() {
   return { ...query, configured };
 }
 
-export const severityLabels: Record<
-  NonNullable<ErrorLog["severity"]>,
-  string
-> = {
+export const severityLabels: Record<NonNullable<ErrorLog["severity"]>, string> = {
   low: "Низкая",
   medium: "Средняя",
   high: "Высокая",

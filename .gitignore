@@ -17,6 +17,12 @@ dist-ssr
 *.local
 .env
 
+# Supabase CLI local cache (machine-specific)
+supabase/.temp/
+
+# Accidental nested git clone
+B2B/
+
 # Wrangler / Cloudflare
 .wrangler/
 .dev.vars

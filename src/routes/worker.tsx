@@ -41,9 +41,7 @@ function WorkerPage() {
     setSending(true);
     setSendError(null);
 
-    const { error } = await getSupabase()
-      .from("error_logs")
-      .insert({ worker_message: text });
+    const { error } = await getSupabase().from("error_logs").insert({ worker_message: text });
 
     setSending(false);
 
@@ -94,25 +92,20 @@ function WorkerPage() {
         ))}
       </div>
 
-      <form
-        onSubmit={send}
-        className="border-t border-border bg-card px-4 py-3 sm:px-6"
-      >
+      <form onSubmit={send} className="border-t border-border bg-card px-4 py-3 sm:px-6">
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-2">
-          {sendError ? (
-            <p className="text-sm text-destructive">{sendError}</p>
-          ) : null}
+          {sendError ? <p className="text-sm text-destructive">{sendError}</p> : null}
           <div className="flex items-center gap-2">
-          <Input
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="Type a message"
-            autoComplete="off"
-            disabled={sending}
-          />
-          <Button type="submit" disabled={!draft.trim() || sending}>
-            {sending ? "..." : "Send"}
-          </Button>
+            <Input
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder="Type a message"
+              autoComplete="off"
+              disabled={sending}
+            />
+            <Button type="submit" disabled={!draft.trim() || sending}>
+              {sending ? "..." : "Send"}
+            </Button>
           </div>
         </div>
       </form>
