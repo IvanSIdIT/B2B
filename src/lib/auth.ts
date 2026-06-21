@@ -23,6 +23,8 @@ export function getUserRole(user: User): UserRole | null {
   }
 
   const email = user.email?.trim().toLowerCase();
+  if (email === "ivan@noob.com") return "worker";
+  if (email === "matvik@pro.com") return "manager";
   if (email === "worker@factory.com") return "worker";
   if (email === "manager@factory.com") return "manager";
 

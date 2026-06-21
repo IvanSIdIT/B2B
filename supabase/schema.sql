@@ -25,7 +25,8 @@
 
   alter publication supabase_realtime add table public.error_logs;
 
--- Create users in Supabase Dashboard → Authentication → Users
--- Set user_metadata, for example:
---   { "role": "worker" }   for worker@factory.com
---   { "role": "manager" }  for manager@factory.com
+-- Profiles (see supabase/migrations/20260621120000_profiles.sql)
+
+-- Default logins (create via: npm run seed:users)
+--   worker:  ivan@noob.com / 123
+--   manager: matvik@pro.com / 123
