@@ -1,28 +1,26 @@
 #!/usr/bin/env python3
 """
-Ingest ZOV.pdf into Supabase (pgvector) with technical semantic chunking.
+Ingest ZOV.pdf into Supabase (pgvector) via LlamaParse + semantic chunking.
 
-Preserves figure captions as single logical units before embedding similarity split.
-Always clears the documents table before import.
+LlamaParse extracts tables and figure captions as Markdown; semantic chunking
+preserves those blocks before embedding upload.
 
 Usage:
   pip install -r requirements-ingest.txt
   python ingest.py
   python ingest.py --threshold-amount 92
-  python ingest.py --threshold-type percentile --threshold-amount 90
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
-from collections import Counter
 from pathlib import Path
 
-import fitz  # PyMuPDF
+import nest_asyncio
 from dotenv import load_dotenv
+from llama_parse import LlamaParse
 from openai import OpenAI
 from supabase import Client, create_client
 
@@ -33,22 +31,22 @@ from semantic_chunking import (
     semantic_chunk_text,
 )
 
+nest_asyncio.apply()
+
 PDF_PATH = Path(r"C:\Users\sidel\Desktop\ZOV.pdf")
 SOURCE_NAME = "ZOV.pdf"
 
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL_NAME", "text-embedding-3-small")
 BATCH_SIZE = 50
 
-PAGE_NUMBER_ONLY_RE = re.compile(r"^\d{1,4}$")
-PAGE_LABEL_RE = re.compile(r"^(стр\.?|page|с\.)\s*\d{1,4}\.?$", re.IGNORECASE)
 
-
-def load_env() -> tuple[str, str, str]:
+def load_env() -> tuple[str, str, str, str]:
     load_dotenv()
 
     supabase_url = (os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL") or "").rstrip("/")
     service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or ""
     openai_api_key = os.getenv("OPENAI_API_KEY") or ""
+    llama_api_key = os.getenv("LLAMA_CLOUD_API_KEY") or ""
 
     missing = []
     if not supabase_url:
@@ -57,95 +55,71 @@ def load_env() -> tuple[str, str, str]:
         missing.append("SUPABASE_SERVICE_ROLE_KEY")
     if not openai_api_key:
         missing.append("OPENAI_API_KEY")
+    if not llama_api_key:
+        missing.append("LLAMA_CLOUD_API_KEY")
 
     if missing:
         print("Не заданы переменные окружения:", ", ".join(missing), file=sys.stderr)
         sys.exit(1)
 
-    return supabase_url, service_role_key, openai_api_key
+    return supabase_url, service_role_key, openai_api_key, llama_api_key
 
 
-def detect_repeated_edge_lines(raw_pages: list[str], edge: str) -> set[str]:
-    counter: Counter[str] = Counter()
+def _document_text(document: object) -> str:
+    if hasattr(document, "text") and document.text:
+        return str(document.text)
+    if hasattr(document, "get_content"):
+        return str(document.get_content())
+    return str(document)
 
-    for page_text in raw_pages:
-        lines = [line.strip() for line in page_text.splitlines() if line.strip()]
-        if not lines:
+
+def _document_page_number(document: object, fallback: int) -> int:
+    metadata = getattr(document, "metadata", None) or {}
+    if not isinstance(metadata, dict):
+        return fallback
+
+    for key in ("page_label", "page_number", "page"):
+        value = metadata.get(key)
+        if value is None:
+            continue
+        try:
+            return int(str(value).strip())
+        except ValueError:
             continue
 
-        candidates = lines[:2] if edge == "header" else lines[-2:]
-        for line in candidates:
-            if len(line) >= 8:
-                counter[line] += 1
-
-    threshold = max(5, int(len(raw_pages) * 0.35))
-    return {line for line, count in counter.items() if count >= threshold}
+    return fallback
 
 
-def clean_page_text(
-    text: str,
-    page_num: int,
-    header_lines: set[str],
-    footer_lines: set[str],
-) -> str:
-    """Keep line breaks so figure captions stay grouped during pre-splitting."""
-    cleaned_lines: list[str] = []
-
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-
-        if stripped in header_lines or stripped in footer_lines:
-            continue
-
-        if PAGE_NUMBER_ONLY_RE.match(stripped) and int(stripped) == page_num:
-            continue
-
-        if PAGE_LABEL_RE.match(stripped):
-            continue
-
-        cleaned_lines.append(stripped)
-
-    return "\n".join(cleaned_lines)
-
-
-def extract_pdf_pages(pdf_path: Path) -> list[tuple[int, str]]:
+def extract_pdf_pages_llamaparse(pdf_path: Path, llama_api_key: str) -> list[tuple[int, str]]:
     if not pdf_path.is_file():
         print(f"PDF не найден: {pdf_path}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"[1/4] Чтение PDF: {pdf_path}")
+    print(f"[1/4] Парсинг PDF через LlamaParse (markdown): {pdf_path}")
+    print("      Это может занять несколько минут для больших файлов...")
 
-    doc = fitz.open(pdf_path)
-    total_pages = doc.page_count
-    print(f"      Файл: {pdf_path.name}, страниц: {total_pages}")
+    parser = LlamaParse(
+        api_key=llama_api_key,
+        result_type="markdown",
+        num_workers=4,
+        verbose=True,
+    )
 
-    raw_pages: list[str] = []
-    for page_index in range(total_pages):
-        page = doc.load_page(page_index)
-        raw_pages.append(page.get_text("text") or "")
-
-    header_lines = detect_repeated_edge_lines(raw_pages, "header")
-    footer_lines = detect_repeated_edge_lines(raw_pages, "footer")
-
-    if header_lines or footer_lines:
-        print(
-            f"      Удаление колонтитулов: верхних — {len(header_lines)}, "
-            f"нижних — {len(footer_lines)}"
-        )
-
+    documents = parser.load_data(str(pdf_path))
     pages: list[tuple[int, str]] = []
-    for page_index, raw_text in enumerate(raw_pages, start=1):
-        cleaned = clean_page_text(raw_text, page_index, header_lines, footer_lines)
-        if cleaned:
-            pages.append((page_index, cleaned))
 
-        if page_index % 10 == 0 or page_index == total_pages:
-            print(f"      Обработано страниц: {page_index}/{total_pages}")
+    for index, document in enumerate(documents, start=1):
+        text = _document_text(document).strip()
+        if not text:
+            continue
 
-    doc.close()
-    print(f"      Извлечено страниц с текстом: {len(pages)}/{total_pages}")
+        page_num = _document_page_number(document, index)
+        pages.append((page_num, text))
+
+        if index % 10 == 0 or index == len(documents):
+            print(f"      Обработано документов LlamaParse: {index}/{len(documents)}")
+
+    print(f"      Извлечено страниц с текстом: {len(pages)}")
     return pages
 
 
@@ -160,7 +134,7 @@ def build_semantic_chunk_rows(
     total_semantic_chunks = 0
 
     print(
-        f"[2/4] Семантическое дробление "
+        f"[2/4] Семантическое дробление Markdown "
         f"(type={threshold_type}, amount={threshold_amount}, "
         f"min_chunk={min_chunk_size}, model={EMBEDDING_MODEL})"
     )
@@ -185,7 +159,8 @@ def build_semantic_chunk_rows(
                         "page": page_num,
                         "chunk_index": chunk_index,
                         "file": PDF_PATH.name,
-                        "chunking": "semantic_technical",
+                        "chunking": "semantic_llamaparse",
+                        "parser": "llama-parse",
                     },
                 }
             )
@@ -238,11 +213,11 @@ def ingest(
     threshold_amount: float,
     min_chunk_size: int,
 ) -> None:
-    supabase_url, service_role_key, openai_api_key = load_env()
+    supabase_url, service_role_key, openai_api_key, llama_api_key = load_env()
     supabase = create_client(supabase_url, service_role_key)
     openai_client = OpenAI(api_key=openai_api_key)
 
-    pages = extract_pdf_pages(PDF_PATH)
+    pages = extract_pdf_pages_llamaparse(PDF_PATH, llama_api_key)
     rows = build_semantic_chunk_rows(
         pages,
         threshold_type=threshold_type,
@@ -262,28 +237,25 @@ def ingest(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Полная перезапись RAG-базы из ZOV.pdf (technical semantic chunking).",
+        description="Полная перезапись RAG-базы из ZOV.pdf (LlamaParse + semantic chunking).",
     )
     parser.add_argument(
         "--threshold-type",
         choices=["gradient", "percentile", "standard_deviation", "interquartile"],
         default=DEFAULT_BREAKPOINT_TYPE,
-        help="Метод порога разрыва (по умолчанию gradient — мягче для списков деталей).",
+        help="Метод порога разрыва (по умолчанию gradient).",
     )
     parser.add_argument(
         "--threshold-amount",
         type=float,
         default=DEFAULT_BREAKPOINT_AMOUNT,
-        help=(
-            "Чувствительность порога (по умолчанию 90). "
-            "Больше — меньше разрезов и крупнее чанки."
-        ),
+        help="Чувствительность порога (больше — крупнее чанки).",
     )
     parser.add_argument(
         "--min-chunk-size",
         type=int,
         default=DEFAULT_MIN_CHUNK_SIZE,
-        help="Минимальный размер чанка в символах (микро-чанки склеиваются).",
+        help="Минимальный размер чанка в символах.",
     )
     args = parser.parse_args()
     ingest(

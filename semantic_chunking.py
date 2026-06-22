@@ -33,6 +33,8 @@ SPEC_ITEM_RE = re.compile(
     re.UNICODE,
 )
 FIGURE_REF_RE = re.compile(r"(?:Рис\.?|Табл\.?|рис\.?|табл\.?)\s", re.IGNORECASE | re.UNICODE)
+MARKDOWN_TABLE_ROW_RE = re.compile(r"^\|.+\|", re.UNICODE)
+MARKDOWN_TABLE_SEP_RE = re.compile(r"^\|?[\s\-:|]+\|", re.UNICODE)
 
 
 @lru_cache(maxsize=1)
@@ -40,31 +42,86 @@ def _get_embeddings() -> OpenAIEmbeddings:
     return OpenAIEmbeddings(model=EMBEDDING_MODEL)
 
 
+def _is_markdown_table_line(line: str) -> bool:
+    stripped = line.strip()
+    return bool(MARKDOWN_TABLE_ROW_RE.match(stripped) or MARKDOWN_TABLE_SEP_RE.match(stripped))
+
+
+def _split_preserving_markdown_tables(text: str) -> list[str]:
+    """Keep Markdown tables (| col | col |) as atomic segments."""
+    lines = text.splitlines()
+    segments: list[str] = []
+    buffer: list[str] = []
+    in_table = False
+
+    def flush() -> None:
+        nonlocal buffer, in_table
+        if buffer:
+            segment = "\n".join(buffer).strip()
+            if segment:
+                segments.append(segment)
+            buffer = []
+        in_table = False
+
+    for line in lines:
+        if _is_markdown_table_line(line):
+            if buffer and not in_table:
+                flush()
+            in_table = True
+            buffer.append(line.rstrip())
+            continue
+
+        if in_table and not line.strip():
+            flush()
+            continue
+
+        if in_table:
+            flush()
+
+        if line.strip():
+            buffer.append(line.rstrip())
+        elif buffer:
+            flush()
+
+    flush()
+    return segments
+
+
 def presplit_technical_units(text: str) -> list[str]:
     """
     Split page text into logical units before semantic comparison.
 
-    - Prefer paragraph / line boundaries from PDF extraction.
+    - Preserve Markdown tables as single blocks (LlamaParse output).
     - Keep figure captions ("Рис. Д-15.2 ... 16 – втулка") as single units.
     """
     stripped = text.strip()
     if not stripped:
         return []
 
-    blocks = re.split(r"\n\s*\n+", stripped)
+    segments = _split_preserving_markdown_tables(stripped)
     units: list[str] = []
 
-    for block in blocks:
-        block = block.strip()
-        if not block:
+    for segment in segments:
+        if all(_is_markdown_table_line(line) or not line.strip() for line in segment.splitlines()):
+            units.extend(_split_oversized_unit(segment))
             continue
 
-        lines = [line.strip() for line in block.splitlines() if line.strip()]
-        if len(lines) <= 1:
-            units.extend(_split_oversized_unit(block))
-            continue
+        blocks = re.split(r"\n\s*\n+", segment)
+        for block in blocks:
+            block = block.strip()
+            if not block:
+                continue
 
-        units.extend(_merge_figure_and_paragraph_lines(lines))
+            if any(_is_markdown_table_line(line) for line in block.splitlines()):
+                units.extend(_split_oversized_unit(block))
+                continue
+
+            lines = [line.strip() for line in block.splitlines() if line.strip()]
+            if len(lines) <= 1:
+                units.extend(_split_oversized_unit(block))
+                continue
+
+            units.extend(_merge_figure_and_paragraph_lines(lines))
 
     if not units:
         lines = [line.strip() for line in stripped.splitlines() if line.strip()]
