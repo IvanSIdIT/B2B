@@ -1,21 +1,25 @@
 import OpenAI from "openai";
 
+import { readServerEnv } from "@/lib/server-env";
+
 import { OpenAIServiceError } from "./types";
 
 const DEFAULT_MODEL = "gpt-4o";
+const API_KEY_ENV = "OPENAI_API_KEY";
+const MODEL_ENV = "OPENAI_MODEL_NAME";
 
 export function getOpenAIModelName(): string {
-  return process.env.OPENAI_MODEL_NAME ?? DEFAULT_MODEL;
+  return readServerEnv(MODEL_ENV) || DEFAULT_MODEL;
 }
 
 export function isOpenAIConfigured(): boolean {
-  return Boolean(process.env.OPENAI_API_KEY?.trim());
+  return Boolean(readServerEnv(API_KEY_ENV));
 }
 
 let client: OpenAI | null = null;
 
 export function getOpenAIClient(): OpenAI {
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  const apiKey = readServerEnv(API_KEY_ENV);
 
   if (!apiKey) {
     throw new OpenAIServiceError(
