@@ -9,12 +9,18 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as ApiAiTestPromptRouteImport } from './routes/api/ai/test-prompt'
 import { Route as ApiAuthLoginRouteImport } from './routes/api/auth/login'
 import { Route as ApiAuthLogoutRouteImport } from './routes/api/auth/logout'
 import { Route as WorkerRouteImport } from './routes/worker'
 import { Route as ManagerRouteImport } from './routes/manager'
 import { Route as IndexRouteImport } from './routes/index'
 
+const ApiAiTestPromptRoute = ApiAiTestPromptRouteImport.update({
+  id: '/api/ai/test-prompt',
+  path: '/api/ai/test-prompt',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAuthLoginRoute = ApiAuthLoginRouteImport.update({
   id: '/api/auth/login',
   path: '/api/auth/login',
@@ -43,6 +49,7 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api/ai/test-prompt': typeof ApiAiTestPromptRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
   '/manager': typeof ManagerRoute
@@ -50,6 +57,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api/ai/test-prompt': typeof ApiAiTestPromptRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
   '/manager': typeof ManagerRoute
@@ -58,6 +66,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api/ai/test-prompt': typeof ApiAiTestPromptRoute
   '/api/auth/login': typeof ApiAuthLoginRoute
   '/api/auth/logout': typeof ApiAuthLogoutRoute
   '/manager': typeof ManagerRoute
@@ -65,14 +74,15 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/auth/login' | '/api/auth/logout' | '/manager' | '/worker'
+  fullPaths: '/' | '/api/ai/test-prompt' | '/api/auth/login' | '/api/auth/logout' | '/manager' | '/worker'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/auth/login' | '/api/auth/logout' | '/manager' | '/worker'
-  id: '__root__' | '/' | '/api/auth/login' | '/api/auth/logout' | '/manager' | '/worker'
+  to: '/' | '/api/ai/test-prompt' | '/api/auth/login' | '/api/auth/logout' | '/manager' | '/worker'
+  id: '__root__' | '/' | '/api/ai/test-prompt' | '/api/auth/login' | '/api/auth/logout' | '/manager' | '/worker'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ApiAiTestPromptRoute: typeof ApiAiTestPromptRoute
   ApiAuthLoginRoute: typeof ApiAuthLoginRoute
   ApiAuthLogoutRoute: typeof ApiAuthLogoutRoute
   ManagerRoute: typeof ManagerRoute
@@ -81,6 +91,13 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/api/ai/test-prompt': {
+      id: '/api/ai/test-prompt'
+      path: '/api/ai/test-prompt'
+      fullPath: '/api/ai/test-prompt'
+      preLoaderRoute: typeof ApiAiTestPromptRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/auth/login': {
       id: '/api/auth/login'
       path: '/api/auth/login'
@@ -121,6 +138,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ApiAiTestPromptRoute: ApiAiTestPromptRoute,
   ApiAuthLoginRoute: ApiAuthLoginRoute,
   ApiAuthLogoutRoute: ApiAuthLogoutRoute,
   ManagerRoute: ManagerRoute,
