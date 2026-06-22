@@ -22,7 +22,12 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from supabase import Client, create_client
 
-from semantic_chunking import DEFAULT_BREAKPOINT_PERCENTILE, semantic_chunk_text
+from semantic_chunking import (
+    DEFAULT_BREAKPOINT_AMOUNT,
+    DEFAULT_BREAKPOINT_TYPE,
+    DEFAULT_MIN_CHUNK_SIZE,
+    semantic_chunk_text,
+)
 
 PDF_PATH = Path(r"C:\Users\sidel\Desktop\Spravochnik_po_TOiKR_obschepromysh-52657.pdf")
 SOURCE_NAME = "Spravochnik_po_TOiKR"
@@ -102,7 +107,7 @@ def clean_page_text(
 
         cleaned_lines.append(stripped)
 
-    return normalize_whitespace(" ".join(cleaned_lines))
+    return "\n".join(cleaned_lines)
 
 
 def extract_pdf_pages(pdf_path: Path) -> list[tuple[int, str]]:
@@ -141,20 +146,28 @@ def extract_pdf_pages(pdf_path: Path) -> list[tuple[int, str]]:
     return pages
 
 
-def build_chunk_rows(pages: list[tuple[int, str]], breakpoint_percentile: float) -> list[dict]:
+def build_chunk_rows(
+    pages: list[tuple[int, str]],
+    *,
+    threshold_type: str,
+    threshold_amount: float,
+    min_chunk_size: int,
+) -> list[dict]:
     rows: list[dict] = []
     total_semantic_chunks = 0
 
     print(
-        f"Семантический чанкинг: percentile threshold = {breakpoint_percentile} "
-        f"(модель {EMBEDDING_MODEL})"
+        f"Семантический чанкинг: type={threshold_type}, amount={threshold_amount}, "
+        f"min_chunk={min_chunk_size}, model={EMBEDDING_MODEL}"
     )
 
     for page_num, page_text in pages:
         label = f"{SOURCE_NAME}, стр. {page_num}"
         page_chunks = semantic_chunk_text(
             page_text,
-            breakpoint_percentile=breakpoint_percentile,
+            breakpoint_threshold_type=threshold_type,  # type: ignore[arg-type]
+            breakpoint_threshold_amount=threshold_amount,
+            min_chunk_size=min_chunk_size,
             context_label=label,
         )
         total_semantic_chunks += len(page_chunks)
@@ -186,13 +199,23 @@ def clear_documents(supabase: Client) -> None:
     supabase.table("documents").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
 
 
-def ingest_pdf(replace: bool, breakpoint_percentile: float) -> None:
+def ingest_pdf(
+    replace: bool,
+    threshold_type: str,
+    threshold_amount: float,
+    min_chunk_size: int,
+) -> None:
     supabase_url, service_role_key, openai_api_key = load_env()
     supabase = create_client(supabase_url, service_role_key)
     openai_client = OpenAI(api_key=openai_api_key)
 
     pages = extract_pdf_pages(PDF_PATH)
-    rows = build_chunk_rows(pages, breakpoint_percentile)
+    rows = build_chunk_rows(
+        pages,
+        threshold_type=threshold_type,
+        threshold_amount=threshold_amount,
+        min_chunk_size=min_chunk_size,
+    )
 
     if not rows:
         print("Текст не извлечён — чанки для загрузки отсутствуют.")
@@ -237,16 +260,27 @@ def main() -> None:
         help="Удалить все существующие строки в documents перед загрузкой.",
     )
     parser.add_argument(
-        "--breakpoint-percentile",
+        "--threshold-type",
+        choices=["gradient", "percentile", "standard_deviation", "interquartile"],
+        default=DEFAULT_BREAKPOINT_TYPE,
+    )
+    parser.add_argument(
+        "--threshold-amount",
         type=float,
-        default=DEFAULT_BREAKPOINT_PERCENTILE,
-        help=(
-            "Порог семантического разрыва в перцентилях (по умолчанию 85). "
-            "Меньше — больше чанков, больше — меньше чанков."
-        ),
+        default=DEFAULT_BREAKPOINT_AMOUNT,
+    )
+    parser.add_argument(
+        "--min-chunk-size",
+        type=int,
+        default=DEFAULT_MIN_CHUNK_SIZE,
     )
     args = parser.parse_args()
-    ingest_pdf(replace=args.replace, breakpoint_percentile=args.breakpoint_percentile)
+    ingest_pdf(
+        replace=args.replace,
+        threshold_type=args.threshold_type,
+        threshold_amount=args.threshold_amount,
+        min_chunk_size=args.min_chunk_size,
+    )
 
 
 if __name__ == "__main__":

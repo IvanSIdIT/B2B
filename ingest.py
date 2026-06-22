@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Ingest ZOV.pdf into Supabase (pgvector) with semantic chunking.
+Ingest ZOV.pdf into Supabase (pgvector) with technical semantic chunking.
 
-Always clears the documents table before import to avoid mixing old chunks.
+Preserves figure captions as single logical units before embedding similarity split.
+Always clears the documents table before import.
 
 Usage:
   pip install -r requirements-ingest.txt
   python ingest.py
-  python ingest.py --breakpoint-percentile 90
+  python ingest.py --threshold-amount 92
+  python ingest.py --threshold-type percentile --threshold-amount 90
 """
 
 from __future__ import annotations
@@ -24,7 +26,12 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from supabase import Client, create_client
 
-from semantic_chunking import DEFAULT_BREAKPOINT_PERCENTILE, semantic_chunk_text
+from semantic_chunking import (
+    DEFAULT_BREAKPOINT_AMOUNT,
+    DEFAULT_BREAKPOINT_TYPE,
+    DEFAULT_MIN_CHUNK_SIZE,
+    semantic_chunk_text,
+)
 
 PDF_PATH = Path(r"C:\Users\sidel\Desktop\ZOV.pdf")
 SOURCE_NAME = "ZOV.pdf"
@@ -58,10 +65,6 @@ def load_env() -> tuple[str, str, str]:
     return supabase_url, service_role_key, openai_api_key
 
 
-def normalize_whitespace(text: str) -> str:
-    return " ".join(text.split())
-
-
 def detect_repeated_edge_lines(raw_pages: list[str], edge: str) -> set[str]:
     counter: Counter[str] = Counter()
 
@@ -85,6 +88,7 @@ def clean_page_text(
     header_lines: set[str],
     footer_lines: set[str],
 ) -> str:
+    """Keep line breaks so figure captions stay grouped during pre-splitting."""
     cleaned_lines: list[str] = []
 
     for line in text.splitlines():
@@ -103,7 +107,7 @@ def clean_page_text(
 
         cleaned_lines.append(stripped)
 
-    return normalize_whitespace(" ".join(cleaned_lines))
+    return "\n".join(cleaned_lines)
 
 
 def extract_pdf_pages(pdf_path: Path) -> list[tuple[int, str]]:
@@ -147,21 +151,27 @@ def extract_pdf_pages(pdf_path: Path) -> list[tuple[int, str]]:
 
 def build_semantic_chunk_rows(
     pages: list[tuple[int, str]],
-    breakpoint_percentile: float,
+    *,
+    threshold_type: str,
+    threshold_amount: float,
+    min_chunk_size: int,
 ) -> list[dict]:
     rows: list[dict] = []
     total_semantic_chunks = 0
 
     print(
-        f"[2/4] Семантическое дробление (percentile={breakpoint_percentile}, "
-        f"модель {EMBEDDING_MODEL})"
+        f"[2/4] Семантическое дробление "
+        f"(type={threshold_type}, amount={threshold_amount}, "
+        f"min_chunk={min_chunk_size}, model={EMBEDDING_MODEL})"
     )
 
     for page_num, page_text in pages:
         label = f"{SOURCE_NAME}, стр. {page_num}"
         page_chunks = semantic_chunk_text(
             page_text,
-            breakpoint_percentile=breakpoint_percentile,
+            breakpoint_threshold_type=threshold_type,  # type: ignore[arg-type]
+            breakpoint_threshold_amount=threshold_amount,
+            min_chunk_size=min_chunk_size,
             context_label=label,
         )
         total_semantic_chunks += len(page_chunks)
@@ -175,7 +185,7 @@ def build_semantic_chunk_rows(
                         "page": page_num,
                         "chunk_index": chunk_index,
                         "file": PDF_PATH.name,
-                        "chunking": "semantic",
+                        "chunking": "semantic_technical",
                     },
                 }
             )
@@ -223,13 +233,22 @@ def upload_chunks(
     return saved
 
 
-def ingest(breakpoint_percentile: float) -> None:
+def ingest(
+    threshold_type: str,
+    threshold_amount: float,
+    min_chunk_size: int,
+) -> None:
     supabase_url, service_role_key, openai_api_key = load_env()
     supabase = create_client(supabase_url, service_role_key)
     openai_client = OpenAI(api_key=openai_api_key)
 
     pages = extract_pdf_pages(PDF_PATH)
-    rows = build_semantic_chunk_rows(pages, breakpoint_percentile)
+    rows = build_semantic_chunk_rows(
+        pages,
+        threshold_type=threshold_type,
+        threshold_amount=threshold_amount,
+        min_chunk_size=min_chunk_size,
+    )
 
     if not rows:
         print("Текст не извлечён — загрузка отменена.")
@@ -243,19 +262,35 @@ def ingest(breakpoint_percentile: float) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Полная перезапись RAG-базы из ZOV.pdf (semantic chunking).",
+        description="Полная перезапись RAG-базы из ZOV.pdf (technical semantic chunking).",
     )
     parser.add_argument(
-        "--breakpoint-percentile",
+        "--threshold-type",
+        choices=["gradient", "percentile", "standard_deviation", "interquartile"],
+        default=DEFAULT_BREAKPOINT_TYPE,
+        help="Метод порога разрыва (по умолчанию gradient — мягче для списков деталей).",
+    )
+    parser.add_argument(
+        "--threshold-amount",
         type=float,
-        default=DEFAULT_BREAKPOINT_PERCENTILE,
+        default=DEFAULT_BREAKPOINT_AMOUNT,
         help=(
-            "Порог семантического разрыва, перцентиль (по умолчанию 85). "
-            "Меньше — больше чанков, больше — меньше чанков."
+            "Чувствительность порога (по умолчанию 90). "
+            "Больше — меньше разрезов и крупнее чанки."
         ),
     )
+    parser.add_argument(
+        "--min-chunk-size",
+        type=int,
+        default=DEFAULT_MIN_CHUNK_SIZE,
+        help="Минимальный размер чанка в символах (микро-чанки склеиваются).",
+    )
     args = parser.parse_args()
-    ingest(breakpoint_percentile=args.breakpoint_percentile)
+    ingest(
+        threshold_type=args.threshold_type,
+        threshold_amount=args.threshold_amount,
+        min_chunk_size=args.min_chunk_size,
+    )
 
 
 if __name__ == "__main__":
