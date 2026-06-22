@@ -14,6 +14,20 @@ export const Route = createFileRoute("/worker")({
 
 type Message = { id: number; role: "worker" | "bot"; text: string };
 
+type ChatHistoryEntry = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+function toChatHistory(messages: Message[]): ChatHistoryEntry[] {
+  return messages
+    .filter((message) => message.id !== 0)
+    .map((message) => ({
+      role: message.role === "worker" ? "user" : "assistant",
+      content: message.text,
+    }));
+}
+
 function WorkerPage() {
   const navigate = useNavigate();
   const [messages, setMessages] = useState<Message[]>([
@@ -33,29 +47,63 @@ function WorkerPage() {
     const text = draft.trim();
     if (!text || sending) return;
 
-    if (!isSupabaseConfigured()) {
-      setSendError("Supabase не настроен. Добавьте ключи в файл .env.");
-      return;
-    }
-
     setSending(true);
     setSendError(null);
 
-    const { error } = await getSupabase().from("error_logs").insert({ worker_message: text });
+    const workerMessageId = messages.length;
+    const botMessageId = messages.length + 1;
+    const history = toChatHistory(messages);
 
-    setSending(false);
-
-    if (error) {
-      setSendError("Не удалось отправить сообщение. Попробуйте ещё раз.");
-      return;
-    }
-
-    setMessages((m) => [
-      ...m,
-      { id: m.length, role: "worker", text },
-      { id: m.length + 1, role: "bot", text: "Message received. A manager has been notified." },
+    setMessages((current) => [
+      ...current,
+      { id: workerMessageId, role: "worker", text },
+      { id: botMessageId, role: "bot", text: "…" },
     ]);
     setDraft("");
+
+    if (isSupabaseConfigured()) {
+      const { error } = await getSupabase().from("error_logs").insert({ worker_message: text });
+      if (error) {
+        console.error("[worker/chat] failed to save error log", error);
+      }
+    }
+
+    try {
+      const response = await fetch("/api/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text, history }),
+      });
+
+      const data = (await response.json()) as { reply?: string; error?: string };
+
+      if (!response.ok || !data.reply) {
+        throw new Error(data.error ?? "Не удалось получить ответ от ассистента");
+      }
+
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === botMessageId ? { ...message, text: data.reply! } : message,
+        ),
+      );
+    } catch (error) {
+      const fallback =
+        error instanceof Error ? error.message : "Не удалось получить ответ от ассистента";
+
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === botMessageId
+            ? {
+                ...message,
+                text: "Не удалось связаться с ИИ-ассистентом. Сообщение сохранено, менеджер уведомлён.",
+              }
+            : message,
+        ),
+      );
+      setSendError(fallback);
+    } finally {
+      setSending(false);
+    }
   }
 
   return (
