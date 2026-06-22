@@ -1,31 +1,39 @@
 #!/usr/bin/env python3
 """
-Ingest local documentation into Supabase (pgvector) for RAG.
+Ingest ZOV.pdf into Supabase (pgvector) with semantic chunking.
+
+Always clears the documents table before import to avoid mixing old chunks.
 
 Usage:
   pip install -r requirements-ingest.txt
-  python ingest.py              # ingest docs/ (append)
-  python ingest.py --replace    # clear documents table, then ingest
+  python ingest.py
+  python ingest.py --breakpoint-percentile 90
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
+from collections import Counter
 from pathlib import Path
 
+import fitz  # PyMuPDF
 from dotenv import load_dotenv
 from openai import OpenAI
-from pypdf import PdfReader
 from supabase import Client, create_client
 
-DOCS_DIR = Path("docs")
-SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf"}
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 200
+from semantic_chunking import DEFAULT_BREAKPOINT_PERCENTILE, semantic_chunk_text
+
+PDF_PATH = Path(r"C:\Users\sidel\Desktop\ZOV.pdf")
+SOURCE_NAME = "ZOV.pdf"
+
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL_NAME", "text-embedding-3-small")
 BATCH_SIZE = 50
+
+PAGE_NUMBER_ONLY_RE = re.compile(r"^\d{1,4}$")
+PAGE_LABEL_RE = re.compile(r"^(стр\.?|page|с\.)\s*\d{1,4}\.?$", re.IGNORECASE)
 
 
 def load_env() -> tuple[str, str, str]:
@@ -44,68 +52,136 @@ def load_env() -> tuple[str, str, str]:
         missing.append("OPENAI_API_KEY")
 
     if missing:
-        print("Missing environment variables:", ", ".join(missing), file=sys.stderr)
+        print("Не заданы переменные окружения:", ", ".join(missing), file=sys.stderr)
         sys.exit(1)
 
     return supabase_url, service_role_key, openai_api_key
 
 
-def read_file_text(path: Path) -> str:
-    if path.suffix.lower() == ".pdf":
-        reader = PdfReader(str(path))
-        pages = [page.extract_text() or "" for page in reader.pages]
-        return "\n".join(pages).strip()
-
-    return path.read_text(encoding="utf-8", errors="replace").strip()
+def normalize_whitespace(text: str) -> str:
+    return " ".join(text.split())
 
 
-def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
-    normalized = " ".join(text.split())
-    if not normalized:
-        return []
+def detect_repeated_edge_lines(raw_pages: list[str], edge: str) -> set[str]:
+    counter: Counter[str] = Counter()
 
-    if len(normalized) <= chunk_size:
-        return [normalized]
+    for page_text in raw_pages:
+        lines = [line.strip() for line in page_text.splitlines() if line.strip()]
+        if not lines:
+            continue
 
-    chunks: list[str] = []
-    start = 0
+        candidates = lines[:2] if edge == "header" else lines[-2:]
+        for line in candidates:
+            if len(line) >= 8:
+                counter[line] += 1
 
-    while start < len(normalized):
-        end = start + chunk_size
-        piece = normalized[start:end].strip()
-        if piece:
-            chunks.append(piece)
-        if end >= len(normalized):
-            break
-        start = max(end - overlap, start + 1)
-
-    return chunks
+    threshold = max(5, int(len(raw_pages) * 0.35))
+    return {line for line, count in counter.items() if count >= threshold}
 
 
-def collect_documents(docs_dir: Path) -> list[tuple[Path, str]]:
-    if not docs_dir.is_dir():
-        print(f"Directory not found: {docs_dir.resolve()}", file=sys.stderr)
+def clean_page_text(
+    text: str,
+    page_num: int,
+    header_lines: set[str],
+    footer_lines: set[str],
+) -> str:
+    cleaned_lines: list[str] = []
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        if stripped in header_lines or stripped in footer_lines:
+            continue
+
+        if PAGE_NUMBER_ONLY_RE.match(stripped) and int(stripped) == page_num:
+            continue
+
+        if PAGE_LABEL_RE.match(stripped):
+            continue
+
+        cleaned_lines.append(stripped)
+
+    return normalize_whitespace(" ".join(cleaned_lines))
+
+
+def extract_pdf_pages(pdf_path: Path) -> list[tuple[int, str]]:
+    if not pdf_path.is_file():
+        print(f"PDF не найден: {pdf_path}", file=sys.stderr)
         sys.exit(1)
 
-    files = sorted(
-        path
-        for path in docs_dir.rglob("*")
-        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
+    print(f"[1/4] Чтение PDF: {pdf_path}")
+
+    doc = fitz.open(pdf_path)
+    total_pages = doc.page_count
+    print(f"      Файл: {pdf_path.name}, страниц: {total_pages}")
+
+    raw_pages: list[str] = []
+    for page_index in range(total_pages):
+        page = doc.load_page(page_index)
+        raw_pages.append(page.get_text("text") or "")
+
+    header_lines = detect_repeated_edge_lines(raw_pages, "header")
+    footer_lines = detect_repeated_edge_lines(raw_pages, "footer")
+
+    if header_lines or footer_lines:
+        print(
+            f"      Удаление колонтитулов: верхних — {len(header_lines)}, "
+            f"нижних — {len(footer_lines)}"
+        )
+
+    pages: list[tuple[int, str]] = []
+    for page_index, raw_text in enumerate(raw_pages, start=1):
+        cleaned = clean_page_text(raw_text, page_index, header_lines, footer_lines)
+        if cleaned:
+            pages.append((page_index, cleaned))
+
+        if page_index % 10 == 0 or page_index == total_pages:
+            print(f"      Обработано страниц: {page_index}/{total_pages}")
+
+    doc.close()
+    print(f"      Извлечено страниц с текстом: {len(pages)}/{total_pages}")
+    return pages
+
+
+def build_semantic_chunk_rows(
+    pages: list[tuple[int, str]],
+    breakpoint_percentile: float,
+) -> list[dict]:
+    rows: list[dict] = []
+    total_semantic_chunks = 0
+
+    print(
+        f"[2/4] Семантическое дробление (percentile={breakpoint_percentile}, "
+        f"модель {EMBEDDING_MODEL})"
     )
 
-    if not files:
-        print(f"No supported files in {docs_dir.resolve()} ({', '.join(sorted(SUPPORTED_EXTENSIONS))})")
-        sys.exit(0)
+    for page_num, page_text in pages:
+        label = f"{SOURCE_NAME}, стр. {page_num}"
+        page_chunks = semantic_chunk_text(
+            page_text,
+            breakpoint_percentile=breakpoint_percentile,
+            context_label=label,
+        )
+        total_semantic_chunks += len(page_chunks)
 
-    documents: list[tuple[Path, str]] = []
-    for path in files:
-        text = read_file_text(path)
-        if text:
-            documents.append((path, text))
-        else:
-            print(f"Skipping empty file: {path}")
+        for chunk_index, chunk in enumerate(page_chunks):
+            rows.append(
+                {
+                    "content": chunk,
+                    "metadata": {
+                        "source": SOURCE_NAME,
+                        "page": page_num,
+                        "chunk_index": chunk_index,
+                        "file": PDF_PATH.name,
+                        "chunking": "semantic",
+                    },
+                }
+            )
 
-    return documents
+    print(f"      Итого семантических чанков: {total_semantic_chunks}")
+    return rows
 
 
 def embed_texts(client: OpenAI, texts: list[str]) -> list[list[float]]:
@@ -114,40 +190,19 @@ def embed_texts(client: OpenAI, texts: list[str]) -> list[list[float]]:
 
 
 def clear_documents(supabase: Client) -> None:
+    print("[3/4] Очистка таблицы documents (удаление старых чанков)...")
     supabase.table("documents").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+    print("      Таблица documents очищена.")
 
 
-def ingest(replace: bool) -> None:
-    supabase_url, service_role_key, openai_api_key = load_env()
-    supabase = create_client(supabase_url, service_role_key)
-    openai_client = OpenAI(api_key=openai_api_key)
+def upload_chunks(
+    supabase: Client,
+    openai_client: OpenAI,
+    rows: list[dict],
+) -> int:
+    print(f"[4/4] Генерация эмбеддингов и загрузка в Supabase ({len(rows)} чанков)...")
 
-    files = collect_documents(DOCS_DIR)
-    rows: list[dict] = []
-
-    for path, text in files:
-        relative_name = str(path.relative_to(DOCS_DIR)).replace("\\", "/")
-        for index, chunk in enumerate(chunk_text(text)):
-            rows.append(
-                {
-                    "content": chunk,
-                    "metadata": {
-                        "source": relative_name,
-                        "chunk_index": index,
-                    },
-                }
-            )
-
-    if not rows:
-        print("No text chunks to ingest.")
-        return
-
-    if replace:
-        print("Clearing existing documents...")
-        clear_documents(supabase)
-
-    print(f"Embedding {len(rows)} chunks with {EMBEDDING_MODEL}...")
-
+    saved = 0
     for start in range(0, len(rows), BATCH_SIZE):
         batch = rows[start : start + BATCH_SIZE]
         embeddings = embed_texts(openai_client, [row["content"] for row in batch])
@@ -162,20 +217,45 @@ def ingest(replace: bool) -> None:
         ]
 
         supabase.table("documents").insert(payload).execute()
-        print(f"  inserted {min(start + BATCH_SIZE, len(rows))}/{len(rows)}")
+        saved += len(payload)
+        print(f"      Сохранено в Supabase: {saved}/{len(rows)}")
 
-    print("Done.")
+    return saved
+
+
+def ingest(breakpoint_percentile: float) -> None:
+    supabase_url, service_role_key, openai_api_key = load_env()
+    supabase = create_client(supabase_url, service_role_key)
+    openai_client = OpenAI(api_key=openai_api_key)
+
+    pages = extract_pdf_pages(PDF_PATH)
+    rows = build_semantic_chunk_rows(pages, breakpoint_percentile)
+
+    if not rows:
+        print("Текст не извлечён — загрузка отменена.")
+        return
+
+    clear_documents(supabase)
+    saved = upload_chunks(supabase, openai_client, rows)
+
+    print(f"Готово. Успешно сохранено семантических чанков в Supabase: {saved}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Ingest docs/ into Supabase pgvector.")
+    parser = argparse.ArgumentParser(
+        description="Полная перезапись RAG-базы из ZOV.pdf (semantic chunking).",
+    )
     parser.add_argument(
-        "--replace",
-        action="store_true",
-        help="Delete all existing rows in documents before ingesting.",
+        "--breakpoint-percentile",
+        type=float,
+        default=DEFAULT_BREAKPOINT_PERCENTILE,
+        help=(
+            "Порог семантического разрыва, перцентиль (по умолчанию 85). "
+            "Меньше — больше чанков, больше — меньше чанков."
+        ),
     )
     args = parser.parse_args()
-    ingest(replace=args.replace)
+    ingest(breakpoint_percentile=args.breakpoint_percentile)
 
 
 if __name__ == "__main__":

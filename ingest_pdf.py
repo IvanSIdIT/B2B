@@ -22,11 +22,11 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from supabase import Client, create_client
 
+from semantic_chunking import DEFAULT_BREAKPOINT_PERCENTILE, semantic_chunk_text
+
 PDF_PATH = Path(r"C:\Users\sidel\Desktop\Spravochnik_po_TOiKR_obschepromysh-52657.pdf")
 SOURCE_NAME = "Spravochnik_po_TOiKR"
 
-CHUNK_SIZE = 1200
-CHUNK_OVERLAP = 200
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL_NAME", "text-embedding-3-small")
 BATCH_SIZE = 50
 
@@ -141,36 +141,23 @@ def extract_pdf_pages(pdf_path: Path) -> list[tuple[int, str]]:
     return pages
 
 
-def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
-    normalized = normalize_whitespace(text)
-    if not normalized:
-        return []
-
-    if len(normalized) <= chunk_size:
-        return [normalized]
-
-    chunks: list[str] = []
-    start = 0
-
-    while start < len(normalized):
-        end = start + chunk_size
-        piece = normalized[start:end].strip()
-        if piece:
-            chunks.append(piece)
-        if end >= len(normalized):
-            break
-        start = max(end - overlap, start + 1)
-
-    return chunks
-
-
-def build_chunk_rows(pages: list[tuple[int, str]]) -> list[dict]:
+def build_chunk_rows(pages: list[tuple[int, str]], breakpoint_percentile: float) -> list[dict]:
     rows: list[dict] = []
-    previous_tail = ""
+    total_semantic_chunks = 0
+
+    print(
+        f"Семантический чанкинг: percentile threshold = {breakpoint_percentile} "
+        f"(модель {EMBEDDING_MODEL})"
+    )
 
     for page_num, page_text in pages:
-        combined = f"{previous_tail} {page_text}".strip() if previous_tail else page_text
-        page_chunks = chunk_text(combined)
+        label = f"{SOURCE_NAME}, стр. {page_num}"
+        page_chunks = semantic_chunk_text(
+            page_text,
+            breakpoint_percentile=breakpoint_percentile,
+            context_label=label,
+        )
+        total_semantic_chunks += len(page_chunks)
 
         for chunk_index, chunk in enumerate(page_chunks):
             rows.append(
@@ -181,12 +168,12 @@ def build_chunk_rows(pages: list[tuple[int, str]]) -> list[dict]:
                         "page": page_num,
                         "chunk_index": chunk_index,
                         "file": PDF_PATH.name,
+                        "chunking": "semantic",
                     },
                 }
             )
 
-        previous_tail = page_text[-CHUNK_OVERLAP:] if len(page_text) > CHUNK_OVERLAP else page_text
-
+    print(f"Итого семантических чанков: {total_semantic_chunks}")
     return rows
 
 
@@ -199,19 +186,19 @@ def clear_documents(supabase: Client) -> None:
     supabase.table("documents").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
 
 
-def ingest_pdf(replace: bool) -> None:
+def ingest_pdf(replace: bool, breakpoint_percentile: float) -> None:
     supabase_url, service_role_key, openai_api_key = load_env()
     supabase = create_client(supabase_url, service_role_key)
     openai_client = OpenAI(api_key=openai_api_key)
 
     pages = extract_pdf_pages(PDF_PATH)
-    rows = build_chunk_rows(pages)
+    rows = build_chunk_rows(pages, breakpoint_percentile)
 
     if not rows:
         print("Текст не извлечён — чанки для загрузки отсутствуют.")
         return
 
-    print(f"Подготовлено чанков: {len(rows)} (размер ~{CHUNK_SIZE} симв., overlap {CHUNK_OVERLAP})")
+    print(f"Подготовлено чанков: {len(rows)}")
 
     if replace:
         print("Очистка таблицы documents...")
@@ -249,8 +236,17 @@ def main() -> None:
         action="store_true",
         help="Удалить все существующие строки в documents перед загрузкой.",
     )
+    parser.add_argument(
+        "--breakpoint-percentile",
+        type=float,
+        default=DEFAULT_BREAKPOINT_PERCENTILE,
+        help=(
+            "Порог семантического разрыва в перцентилях (по умолчанию 85). "
+            "Меньше — больше чанков, больше — меньше чанков."
+        ),
+    )
     args = parser.parse_args()
-    ingest_pdf(replace=args.replace)
+    ingest_pdf(replace=args.replace, breakpoint_percentile=args.breakpoint_percentile)
 
 
 if __name__ == "__main__":
