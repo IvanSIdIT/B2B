@@ -1,12 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { convertToModelMessages, type UIMessage } from "ai";
 import { z } from "zod";
 
-import {
-  isOpenAIConfigured,
-  openaiService,
-  OpenAIServiceError,
-  type ChatMessage,
-} from "@/lib/openai";
+import { aiService, AIServiceError, isAIConfigured } from "@/lib/ai";
 
 const FACTORY_ASSISTANT_PROMPT = `Ты — ИИ-ассистент на производственной линии Factory Console.
 Помогай работнику описывать неисправности, уточняй детали при необходимости.
@@ -14,16 +10,7 @@ const FACTORY_ASSISTANT_PROMPT = `Ты — ИИ-ассистент на прои
 Если проблема критична, явно укажи это и порекомендуй немедленно сообщить менеджеру.`;
 
 const chatSchema = z.object({
-  message: z.string().trim().min(1, "Сообщение не может быть пустым"),
-  history: z
-    .array(
-      z.object({
-        role: z.enum(["user", "assistant"]),
-        content: z.string(),
-      }),
-    )
-    .optional()
-    .default([]),
+  messages: z.array(z.custom<UIMessage>()).min(1, "История сообщений не может быть пустой"),
 });
 
 export const Route = createFileRoute("/api/ai/chat")({
@@ -31,7 +18,7 @@ export const Route = createFileRoute("/api/ai/chat")({
     handlers: {
       POST: async ({ request }) => {
         try {
-          if (!isOpenAIConfigured()) {
+          if (!isAIConfigured()) {
             return Response.json(
               { error: "OpenAI не настроен. Добавьте OPENAI_API_KEY в переменные окружения." },
               { status: 503 },
@@ -51,29 +38,20 @@ export const Route = createFileRoute("/api/ai/chat")({
             return Response.json({ error: firstError }, { status: 400 });
           }
 
-          const messages: ChatMessage[] = [
-            { role: "system", content: FACTORY_ASSISTANT_PROMPT },
-            ...parsed.data.history.map((entry) => ({
-              role: entry.role,
-              content: entry.content,
-            })),
-            { role: "user", content: parsed.data.message },
-          ];
-
-          const result = await openaiService.generateChatCompletion(messages, {
+          const result = aiService.streamChat({
+            system: FACTORY_ASSISTANT_PROMPT,
+            messages: await convertToModelMessages(parsed.data.messages),
             model: "gpt-4o",
           });
 
-          return Response.json(
-            {
-              reply: result.content,
-              model: result.model,
-              finishReason: result.finishReason,
+          return result.toUIMessageStreamResponse({
+            onError: (error) => {
+              console.error("[api/ai/chat] stream error", error);
+              return "Не удалось завершить генерацию ответа.";
             },
-            { status: 200 },
-          );
+          });
         } catch (error) {
-          if (error instanceof OpenAIServiceError) {
+          if (error instanceof AIServiceError) {
             return Response.json(
               { error: error.message, code: error.code },
               { status: error.statusCode },

@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 
-import { isOpenAIConfigured, openaiService, OpenAIServiceError } from "@/lib/openai";
+import { aiService, AIServiceError, isAIConfigured } from "@/lib/ai";
 
 const testPromptSchema = z.object({
   prompt: z.string().trim().min(1, "Поле prompt обязательно"),
@@ -12,7 +12,7 @@ export const Route = createFileRoute("/api/ai/test-prompt")({
     handlers: {
       POST: async ({ request }) => {
         try {
-          if (!isOpenAIConfigured()) {
+          if (!isAIConfigured()) {
             return Response.json(
               { error: "OpenAI не настроен. Добавьте OPENAI_API_KEY в переменные окружения." },
               { status: 503 },
@@ -32,7 +32,7 @@ export const Route = createFileRoute("/api/ai/test-prompt")({
             return Response.json({ error: firstError }, { status: 400 });
           }
 
-          const result = await openaiService.generateChatCompletion([
+          const result = await aiService.generateChatCompletion([
             { role: "system", content: "Ты полезный ассистент." },
             { role: "user", content: parsed.data.prompt },
           ]);
@@ -46,7 +46,7 @@ export const Route = createFileRoute("/api/ai/test-prompt")({
             { status: 200 },
           );
         } catch (error) {
-          if (error instanceof OpenAIServiceError) {
+          if (error instanceof AIServiceError) {
             return Response.json(
               { error: error.message, code: error.code },
               { status: error.statusCode },

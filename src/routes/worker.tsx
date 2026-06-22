@@ -1,5 +1,7 @@
+import { useChat } from "@ai-sdk/react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { DefaultChatTransport, type UIMessage } from "ai";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { signOut } from "@/lib/auth-client";
@@ -12,31 +14,40 @@ export const Route = createFileRoute("/worker")({
   component: WorkerPage,
 });
 
-type Message = { id: number; role: "worker" | "bot"; text: string };
-
-type ChatHistoryEntry = {
-  role: "user" | "assistant";
-  content: string;
+const WELCOME_MESSAGE: UIMessage = {
+  id: "welcome",
+  role: "assistant",
+  parts: [
+    {
+      type: "text",
+      text: "Hello. Describe the issue you are observing on the line.",
+    },
+  ],
 };
 
-function toChatHistory(messages: Message[]): ChatHistoryEntry[] {
-  return messages
-    .filter((message) => message.id !== 0)
-    .map((message) => ({
-      role: message.role === "worker" ? "user" : "assistant",
-      content: message.text,
-    }));
+function getMessageText(message: UIMessage): string {
+  return message.parts
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("");
 }
 
 function WorkerPage() {
   const navigate = useNavigate();
-  const [messages, setMessages] = useState<Message[]>([
-    { id: 0, role: "bot", text: "Hello. Describe the issue you are observing on the line." },
-  ]);
   const [draft, setDraft] = useState("");
-  const [sending, setSending] = useState(false);
-  const [sendError, setSendError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const transport = useMemo(
+    () => new DefaultChatTransport({ api: "/api/ai/chat" }),
+    [],
+  );
+
+  const { messages, status, sendMessage, error } = useChat({
+    transport,
+    messages: [WELCOME_MESSAGE],
+  });
+
+  const sending = status === "submitted" || status === "streaming";
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -47,63 +58,19 @@ function WorkerPage() {
     const text = draft.trim();
     if (!text || sending) return;
 
-    setSending(true);
-    setSendError(null);
-
-    const workerMessageId = messages.length;
-    const botMessageId = messages.length + 1;
-    const history = toChatHistory(messages);
-
-    setMessages((current) => [
-      ...current,
-      { id: workerMessageId, role: "worker", text },
-      { id: botMessageId, role: "bot", text: "…" },
-    ]);
     setDraft("");
 
     if (isSupabaseConfigured()) {
-      const { error } = await getSupabase().from("error_logs").insert({ worker_message: text });
-      if (error) {
-        console.error("[worker/chat] failed to save error log", error);
+      const { error: saveError } = await getSupabase()
+        .from("error_logs")
+        .insert({ worker_message: text });
+
+      if (saveError) {
+        console.error("[worker/chat] failed to save error log", saveError);
       }
     }
 
-    try {
-      const response = await fetch("/api/ai/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, history }),
-      });
-
-      const data = (await response.json()) as { reply?: string; error?: string };
-
-      if (!response.ok || !data.reply) {
-        throw new Error(data.error ?? "Не удалось получить ответ от ассистента");
-      }
-
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === botMessageId ? { ...message, text: data.reply! } : message,
-        ),
-      );
-    } catch (error) {
-      const fallback =
-        error instanceof Error ? error.message : "Не удалось получить ответ от ассистента";
-
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === botMessageId
-            ? {
-                ...message,
-                text: "Не удалось связаться с ИИ-ассистентом. Сообщение сохранено, менеджер уведомлён.",
-              }
-            : message,
-        ),
-      );
-      setSendError(fallback);
-    } finally {
-      setSending(false);
-    }
+    await sendMessage({ text });
   }
 
   return (
@@ -126,23 +93,28 @@ function WorkerPage() {
         ref={scrollRef}
         className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-3 overflow-y-auto px-4 py-6 sm:px-6"
       >
-        {messages.map((m) => (
-          <div
-            key={m.id}
-            className={
-              m.role === "worker"
-                ? "ml-auto max-w-[80%] rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
-                : "mr-auto max-w-[80%] text-sm text-foreground"
-            }
-          >
-            {m.text}
-          </div>
-        ))}
+        {messages.map((message) => {
+          const text = getMessageText(message);
+          const isWorker = message.role === "user";
+
+          return (
+            <div
+              key={message.id}
+              className={
+                isWorker
+                  ? "ml-auto max-w-[80%] rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
+                  : "mr-auto max-w-[80%] text-sm text-foreground"
+              }
+            >
+              {text || (sending && message.role === "assistant" ? "…" : "")}
+            </div>
+          );
+        })}
       </div>
 
       <form onSubmit={send} className="border-t border-border bg-card px-4 py-3 sm:px-6">
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-2">
-          {sendError ? <p className="text-sm text-destructive">{sendError}</p> : null}
+          {error ? <p className="text-sm text-destructive">{error.message}</p> : null}
           <div className="flex items-center gap-2">
             <Input
               value={draft}

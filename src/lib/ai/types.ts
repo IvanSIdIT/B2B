@@ -1,14 +1,11 @@
-export type ChatRole = "system" | "user" | "assistant";
+import type { ModelMessage } from "ai";
 
-export type ChatMessage = {
-  role: ChatRole;
-  content: string;
-};
+export type ChatMessage = ModelMessage;
 
 export type ChatCompletionOptions = {
   model?: string;
   temperature?: number;
-  maxTokens?: number;
+  maxOutputTokens?: number;
 };
 
 export type ChatCompletionResult = {
@@ -17,13 +14,13 @@ export type ChatCompletionResult = {
   finishReason: string | null;
 };
 
-export class OpenAIServiceError extends Error {
+export class AIServiceError extends Error {
   readonly code: string;
   readonly statusCode: number;
 
   constructor(message: string, code: string, statusCode: number) {
     super(message);
-    this.name = "OpenAIServiceError";
+    this.name = "AIServiceError";
     this.code = code;
     this.statusCode = statusCode;
   }
