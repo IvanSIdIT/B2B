@@ -53,6 +53,8 @@ export async function getRelevantContext(
     return [];
   }
 
+  console.log("[rag] embedding query:", query.slice(0, 120));
+
   const embedding = await embedQuery(query);
   const supabase = createSupabaseAdminClient();
 
@@ -66,12 +68,28 @@ export async function getRelevantContext(
     throw new Error(`match_documents failed: ${error.message}`);
   }
 
-  return (data ?? []).map((row) => ({
+  const matches = (data ?? []).map((row) => ({
     id: row.id,
     content: row.content,
     metadata: row.metadata as Record<string, unknown> | null,
     similarity: row.similarity,
   }));
+
+  console.log("[rag] match_documents returned", matches.length, "rows");
+
+  return matches;
+}
+
+/** Returns formatted context string for the system prompt. */
+export async function getRelevantContextText(
+  userQuery: string,
+  options: {
+    matchCount?: number;
+    matchThreshold?: number;
+  } = {},
+): Promise<string> {
+  const matches = await getRelevantContext(userQuery, options);
+  return formatContextForPrompt(matches);
 }
 
 export function formatContextForPrompt(matches: DocumentMatch[]): string {

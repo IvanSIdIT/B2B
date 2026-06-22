@@ -2,6 +2,7 @@ export {
   embedQuery,
   formatContextForPrompt,
   getRelevantContext,
+  getRelevantContextText,
   isRagConfigured,
   type DocumentMatch,
 } from "./ai-search";
