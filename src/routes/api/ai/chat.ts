@@ -2,16 +2,69 @@ import { createFileRoute } from "@tanstack/react-router";
 import { convertToModelMessages, type UIMessage } from "ai";
 import { z } from "zod";
 
-import { aiService, AIServiceError, isAIConfigured } from "@/lib/ai";
+import {
+  aiService,
+  AIServiceError,
+  formatContextForPrompt,
+  getRelevantContext,
+  isAIConfigured,
+  isRagConfigured,
+} from "@/lib/ai";
 
 const FACTORY_ASSISTANT_PROMPT = `Ты — ИИ-ассистент на производственной линии Factory Console.
 Помогай работнику описывать неисправности, уточняй детали при необходимости.
 Отвечай кратко, по делу и на русском языке.
-Если проблема критична, явно укажи это и порекомендуй немедленно сообщить менеджеру.`;
+Если проблема критична, явно укажи это и порекомендуй немедленно сообщить менеджеру.
+Если в контексте есть выдержки из справочника ТОиКР — опирайся на них и указывай номер страницы.`;
 
 const chatSchema = z.object({
   messages: z.array(z.custom<UIMessage>()).min(1, "История сообщений не может быть пустой"),
 });
+
+function getLastUserMessageText(messages: UIMessage[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "user") continue;
+
+    return message.parts
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join("");
+  }
+
+  return "";
+}
+
+async function buildSystemPrompt(messages: UIMessage[]): Promise<string> {
+  if (!isRagConfigured()) {
+    return FACTORY_ASSISTANT_PROMPT;
+  }
+
+  const userQuery = getLastUserMessageText(messages);
+  if (!userQuery) {
+    return FACTORY_ASSISTANT_PROMPT;
+  }
+
+  try {
+    const matches = await getRelevantContext(userQuery, {
+      matchCount: 5,
+      matchThreshold: 0.45,
+    });
+
+    const ragContext = formatContextForPrompt(matches);
+    if (!ragContext) {
+      return FACTORY_ASSISTANT_PROMPT;
+    }
+
+    return `${FACTORY_ASSISTANT_PROMPT}
+
+Релевантные выдержки из справочника ТОиКР:
+${ragContext}`;
+  } catch (error) {
+    console.error("[api/ai/chat] RAG lookup failed", error);
+    return FACTORY_ASSISTANT_PROMPT;
+  }
+}
 
 export const Route = createFileRoute("/api/ai/chat")({
   server: {
@@ -38,8 +91,10 @@ export const Route = createFileRoute("/api/ai/chat")({
             return Response.json({ error: firstError }, { status: 400 });
           }
 
+          const system = await buildSystemPrompt(parsed.data.messages);
+
           const result = aiService.streamChat({
-            system: FACTORY_ASSISTANT_PROMPT,
+            system,
             messages: await convertToModelMessages(parsed.data.messages),
             model: "gpt-4o",
           });

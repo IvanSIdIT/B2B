@@ -25,6 +25,9 @@
 
   alter publication supabase_realtime add table public.error_logs;
 
+-- RAG documents + pgvector (see supabase/migrations/20260621200000_documents_rag.sql)
+-- Ingest local docs: pip install -r requirements-ingest.txt && python ingest.py --replace
+
 -- Profiles (see supabase/migrations/20260621120000_profiles.sql)
 
 -- Default logins (create via: npm run seed:users)
