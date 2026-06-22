@@ -2,9 +2,7 @@ const url = (process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL)?.replace
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (!url || !serviceRoleKey) {
-  console.error(
-    "Set SUPABASE_URL (or VITE_SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY in .env",
-  );
+  console.error("Set SUPABASE_URL (or VITE_SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY in .env");
   console.error("Service role key: Supabase Dashboard → Settings → API → service_role");
   process.exit(1);
 }
